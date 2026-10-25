@@ -1,0 +1,15 @@
+pmOnFail: ignore
+
+minimumReleaseAgeExclude:
+  - '@next/*'
+  - next
+
+allowBuilds:
+  bigint-buffer: true
+  bufferutil: true
+  utf-8-validate: true
+  protobufjs: true
+  '@stellar/stellar-sdk': false
+  blake-hash: false
+  tiny-secp256k1: false
+  usb: false
