@@ -2,7 +2,7 @@
 
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useAppNetwork } from '@/components/solsend/solana-providers';
 import { 
   parseRecipients, 
@@ -39,6 +39,7 @@ export default function Home() {
   const { publicKey, signTransaction, signAllTransactions } = useWallet();
   const { network, setNetwork } = useAppNetwork();
 
+  const [mounted, setMounted] = useState<boolean>(false);
   const [token, setToken] = useState<TokenKind>('SOL');
   const [useMultiHopper, setUseMultiHopper] = useState<boolean>(true);
   const [defaultAmount, setDefaultAmount] = useState<string>('0.01');
@@ -46,6 +47,10 @@ export default function Home() {
   const [results, setResults] = useState<Record<string, ExecutionResult>>({});
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [globalStatus, setGlobalStatus] = useState<string>('');
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const entries = useMemo(() => parseRecipients(inputText, defaultAmount), [inputText, defaultAmount]);
   const recipients = useMemo(() => deriveRecipients(entries, results, token), [entries, results, token]);
@@ -168,7 +173,14 @@ export default function Home() {
             <option value="devnet">Devnet</option>
             <option value="mainnet-beta">Mainnet</option>
           </select>
-          <WalletMultiButton />
+
+          {mounted ? (
+            <WalletMultiButton />
+          ) : (
+            <button className="px-4 py-2 bg-purple-600/50 rounded-lg text-sm font-semibold text-white/50 cursor-not-allowed">
+              Connect Wallet
+            </button>
+          )}
         </div>
       </header>
 
