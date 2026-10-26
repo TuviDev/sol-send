@@ -2,11 +2,11 @@
 
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
-import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
-import { Search, Upload, Zap, Trash2, CheckCircle2, XCircle, Clock, ExternalLink, ShieldCheck, FileDown, LogOut } from 'lucide-react';
+import { useWalletModal } from '@solana/wallet-adapter-react-ui';
+import { Search, Upload, Zap, Trash2, CheckCircle2, XCircle, Clock, ExternalLink, ShieldCheck, FileDown, LogOut, Wallet, RefreshCw } from 'lucide-react';
 import { useAppNetwork } from '@/components/solsend/solana-providers';
 import { useBalances } from '@/hooks/use-balances';
-import { parseRecipients, deriveRecipients, explorerTxUrl, amountError, BATCH_SIZE } from '@/lib/solana';
+import { parseRecipients, deriveRecipients, explorerTxUrl, BATCH_SIZE } from '@/lib/solana';
 import { executeMassPayout } from '@/lib/multihopper';
 import { Button } from '@/components/ui/button';
 
@@ -16,6 +16,7 @@ export default function AppDashboard() {
 
   const { network, setNetwork, connection } = useAppNetwork();
   const wallet = useWallet();
+  const { setVisible } = useWalletModal();
   const balances = useBalances(wallet.publicKey?.toBase58() || null, network);
   
   const [token, setToken] = useState<'SOL' | 'USDC'>('SOL');
@@ -33,7 +34,7 @@ export default function AppDashboard() {
 
   const DEMO_RECIPIENTS = `7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU,0.5\nEjMyNzmFchKNxZBWLqA228CeUS48xZSD72wBdb1Bf34u,1.25`;
 
-  const { valid, totalAmount, hasErrors } = useMemo(() => {
+  const { valid, totalAmount } = useMemo(() => {
     const parsed = parseRecipients(inputText, defaultAmount);
     return deriveRecipients(parsed, token);
   }, [inputText, defaultAmount, token]);
@@ -71,6 +72,36 @@ export default function AppDashboard() {
     a.href = url;
     a.download = `solsend-export-${Date.now()}.csv`;
     a.click();
+  };
+
+  const handleSwitchWallet = async () => {
+    try {
+      if (wallet.connected) {
+        await wallet.disconnect();
+      }
+      wallet.select(null as any);
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('walletName');
+      }
+      setVisible(true);
+    } catch {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('walletName');
+      }
+      setVisible(true);
+    }
+  };
+
+  const handleDisconnectWallet = async () => {
+    try {
+      await wallet.disconnect();
+    } catch {
+      // ignore
+    } finally {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('walletName');
+      }
+    }
   };
 
   const handleExecute = async () => {
@@ -129,7 +160,7 @@ export default function AppDashboard() {
             </span>
           </div>
           
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             {mounted && wallet.connected && currentBalance !== null && (
               <div className="hidden sm:block text-sm font-medium px-3 py-1.5 bg-slate-100 dark:bg-slate-800 rounded-md">
                 {currentBalance.toLocaleString()} {token}
@@ -138,7 +169,7 @@ export default function AppDashboard() {
             <select
               value={network}
               onChange={(e) => setNetwork(e.target.value as any)}
-              className="bg-slate-100 dark:bg-slate-800 text-sm border-0 rounded-md px-3 py-2 outline-none"
+              className="bg-slate-100 dark:bg-slate-800 text-sm border-0 rounded-md px-3 py-2 outline-none cursor-pointer"
             >
               <option value="devnet">Devnet</option>
               <option value="mainnet-beta">Mainnet</option>
@@ -146,17 +177,35 @@ export default function AppDashboard() {
             
             {mounted ? (
               <div className="flex items-center gap-2">
-                <WalletMultiButton className="!bg-blue-600 hover:!bg-blue-700 !h-10 !rounded-md transition-colors" />
-                {wallet.connected && (
+                {!wallet.connected ? (
                   <Button 
-                    variant="destructive" 
-                    size="icon" 
-                    onClick={() => wallet.disconnect()} 
-                    title="Disconnect Wallet"
-                    className="h-10 w-10 shrink-0"
+                    onClick={handleSwitchWallet} 
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-medium h-10 px-4 rounded-md flex items-center gap-2"
                   >
-                    <LogOut className="w-4 h-4" />
+                    <Wallet className="w-4 h-4" /> Connect Wallet
                   </Button>
+                ) : (
+                  <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 p-1 rounded-md">
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      onClick={handleSwitchWallet}
+                      title="Switch to another wallet"
+                      className="text-xs font-mono h-8 px-2 flex items-center gap-1.5"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-blue-500" />
+                      {wallet.publicKey?.toBase58().slice(0, 4)}...{wallet.publicKey?.toBase58().slice(-4)}
+                    </Button>
+                    <Button 
+                      variant="destructive" 
+                      size="icon" 
+                      onClick={handleDisconnectWallet} 
+                      title="Disconnect Wallet"
+                      className="h-8 w-8 shrink-0"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
                 )}
               </div>
             ) : (
