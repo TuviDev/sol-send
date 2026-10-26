@@ -1,202 +1,145 @@
-'use client'
+﻿"use client";
 
-import { useMemo, useState } from 'react'
-import { useConnection } from '@solana/wallet-adapter-react'
-import { CheckCircle2, X } from 'lucide-react'
-import { AppHeader } from './app-header'
-import { RecipientsInput } from './recipients-input'
-import { RecipientsTable } from './recipients-table'
-import { SummaryCard } from './summary-card'
-import { useAppNetwork } from './solana-providers'
-import { useSolanaWallet } from '@/hooks/use-solana-wallet'
-import { useBalances } from '@/hooks/use-balances'
-import { executeMassPayout } from '@/lib/multihopper'
-import {
-  deriveRecipients,
-  type Entry,
-  estimateCosts,
-  type ExecutionResult,
-  parseRecipients,
-  TOKEN_DECIMALS,
-  toBaseUnits,
-  type TokenKind,
-} from '@/lib/solana'
-
-type Notice = { tone: 'success' | 'error'; message: string }
+import { useState, useMemo, useEffect } from 'react';
+import { useWallet } from '@solana/wallet-adapter-react';
+import { useAppNetwork } from './solana-providers';
+import { useBalances } from '@/hooks/use-balances';
+import { parseRecipients, deriveRecipients, explorerTxUrl, TokenKind, ExecutionResult } from '@/lib/solana';
+import { executeMassPayout } from '@/lib/multihopper';
+import { AppHeader } from './app-header';
+import { RecipientsInput } from './recipients-input';
+import { RecipientsTable } from './recipients-table';
+import { SummaryCard } from './summary-card';
 
 export function PayoutApp() {
-  const wallet = useSolanaWallet()
-  const { network, setNetwork } = useAppNetwork()
-  const { connection } = useConnection()
-  const [token, setToken] = useState<TokenKind>('SOL')
-  const [defaultAmount, setDefaultAmount] = useState('0.1')
-  const [entries, setEntries] = useState<Entry[]>([])
-  const [results, setResults] = useState<Record<string, ExecutionResult>>({})
-  const [executing, setExecuting] = useState(false)
-  const [notice, setNotice] = useState<Notice | null>(null)
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
-  const { data: balances, mutate: refreshBalances } = useBalances(connection, network, wallet.address)
+  const { network, setNetwork, connection } = useAppNetwork();
+  const wallet = useWallet();
+  const balances = useBalances(wallet.publicKey?.toBase58() || null, network);
 
-  const recipients = useMemo(
-    () => deriveRecipients(entries, results, token),
-    [entries, results, token],
-  )
-  const ready = recipients.filter((r) => r.status === 'ready')
-  const decimals = TOKEN_DECIMALS[token]
-  const totalAmount = ready.reduce((sum, r) => sum + toBaseUnits(r.amount, decimals), BigInt(0))
-  const { txCount, networkFeeLamports, rentLamports } = estimateCosts(ready.length, token)
-  const requiredLamports =
-    networkFeeLamports + rentLamports + (token === 'SOL' ? totalAmount : BigInt(0))
+  const [token, setToken] = useState<TokenKind>('SOL');
+  const [defaultAmount, setDefaultAmount] = useState<number>(0.1);
+  const [inputText, setInputText] = useState('');
+  const [isExecuting, setIsExecuting] = useState(false);
+  const [statusMsg, setStatusMsg] = useState('');
+  const [results, setResults] = useState<ExecutionResult[]>([]);
 
-  const processed = recipients.filter((r) => r.status === 'confirmed' || r.status === 'failed')
-  const inFlight = recipients.filter((r) => r.status === 'processing').length
+  const DEMO_RECIPIENTS = `7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU,0.5\nEjMyNzmFchKNxZBWLqA228CeUS48xZSD72wBdb1Bf34u,1.25`;
 
-  let blocker: string | null = null
-  if (ready.length === 0) blocker = 'Add at least one valid recipient to continue.'
-  else if (balances && balances.sol < requiredLamports) blocker = 'Insufficient SOL balance for this payout.'
-  else if (balances && token === 'USDC' && balances.usdc < totalAmount)
-    blocker = 'Insufficient USDC balance for this payout.'
+  const { valid, totalAmount } = useMemo(() => {
+    const parsed = parseRecipients(inputText, defaultAmount);
+    return deriveRecipients(parsed, token);
+  }, [inputText, defaultAmount, token]);
 
-  function addRecipients(text: string) {
-    const parsed = parseRecipients(text, defaultAmount)
-    if (parsed.length === 0) {
-      setNotice({ tone: 'error', message: 'No wallet addresses found in that input.' })
-      return
+  useEffect(() => {
+    if (valid.length > 0 && results.length === 0) {
+      setResults(valid.map(v => ({ address: v.address, status: 'ready' })));
+    } else if (valid.length === 0) {
+      setResults([]);
     }
-    setEntries((prev) => [...prev, ...parsed])
-    setNotice(null)
-  }
+  }, [valid.length]);
 
-  function clearAll() {
-    setEntries([])
-    setResults({})
-    setNotice(null)
-  }
+  const handleExportCSV = () => {
+    const header = "Address,Status,ExplorerURL\n";
+    const rows = results.map(r => {
+      const url = r.signature ? explorerTxUrl(r.signature, network) : '';
+      return `${r.address},${r.status},${url}`;
+    }).join('\n');
 
-  async function execute() {
-    if (!wallet.publicKey || blocker) return
-    setExecuting(true)
-    setNotice(null)
+    const blob = new Blob([header + rows], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `solsend-export-${Date.now()}.csv`;
+    a.click();
+  };
+
+  const handleExecute = async () => {
+    if (!wallet.connected || !wallet.signAllTransactions) {
+      setStatusMsg('Please connect a compatible wallet.');
+      return;
+    }
+
+    setIsExecuting(true);
+    setStatusMsg('Preparing MultiHopper privacy routes...');
+
+    const addresses = valid.map(v => v.address);
+    const amounts = valid.map(v => v.amount);
+
     try {
-      const { confirmed, total } = await executeMassPayout({
-        connection,
-        signer: { publicKey: wallet.publicKey, signTransaction: wallet.signTransaction },
+      const result = await executeMassPayout(wallet as any, connection, {
+        recipients: addresses,
+        amounts,
+        tokenKind: token,
         network,
-        token,
-        recipients: ready,
-        onUpdate: (ids, result) =>
-          setResults((prev) => {
-            const next = { ...prev }
-            for (const id of ids) next[id] = result
-            return next
-          }),
-      })
-      setNotice(
-        confirmed === total
-          ? { tone: 'success', message: `Payout complete — ${confirmed} recipients paid.` }
-          : { tone: 'error', message: `${confirmed} of ${total} transfers confirmed. Check failed rows.` },
-      )
-    } catch (error) {
-      const ids = new Set(ready.map((r) => r.id))
-      setResults((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => !ids.has(id))))
-      setNotice({
-        tone: 'error',
-        message: error instanceof Error ? error.message : 'Payout was cancelled.',
-      })
-    } finally {
-      setExecuting(false)
-      refreshBalances()
-    }
-  }
+      });
 
-  const walletError = wallet.error
+      if (result.success) {
+        setStatusMsg('Payout successfully broadcasted!');
+        setResults(prev => prev.map(r => ({ ...r, status: 'completed' })));
+        balances.mutate();
+      } else {
+        setStatusMsg(`Error: ${result.error}`);
+        setResults(prev => prev.map(r => ({ ...r, status: 'failed' })));
+      }
+    } catch (err: any) {
+      setStatusMsg(`Execution failed: ${err.message}`);
+    } finally {
+      setIsExecuting(false);
+    }
+  };
+
+  const currentBalance = token === 'SOL' ? balances.sol : balances.usdc;
+  const isInsufficient = currentBalance !== null && totalAmount > currentBalance;
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
       <AppHeader
         network={network}
-        onNetworkChange={setNetwork}
-        address={wallet.address}
-        connecting={wallet.connecting}
-        locked={executing}
-        onConnect={wallet.connect}
-        onDisconnect={wallet.disconnect}
+        setNetwork={setNetwork}
+        solBalance={balances.sol}
+        usdcBalance={balances.usdc}
+        mounted={mounted}
       />
 
-      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:py-12">
-        <div className="mb-8 flex flex-col gap-2">
-          <h1 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
-            Mass payouts &amp; airdrops on Solana
-          </h1>
-          <p className="max-w-2xl text-muted-foreground text-pretty">
-            Send SOL or USDC to hundreds of wallets in a handful of batched transactions. Upload a
-            list, review it, and sign once.
-          </p>
+      <main className="max-w-7xl mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
+        <div className="lg:col-span-4 space-y-6">
+          <RecipientsInput
+            inputText={inputText}
+            setInputText={setInputText}
+            defaultAmount={defaultAmount}
+            setDefaultAmount={setDefaultAmount}
+            demoRecipients={DEMO_RECIPIENTS}
+          />
         </div>
 
-        {(notice || walletError) && (
-          <div
-            role="status"
-            className={
-              notice?.tone === 'success' && !walletError
-                ? 'mb-6 flex items-start gap-3 rounded-lg border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-primary'
-                : 'mb-6 flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive'
-            }
-          >
-            {notice?.tone === 'success' && !walletError && (
-              <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            )}
-            <p className="flex-1">{walletError ?? notice?.message}</p>
-            <button
-              type="button"
-              aria-label="Dismiss"
-              onClick={() => (walletError ? wallet.clearError() : setNotice(null))}
-              className="opacity-70 hover:opacity-100"
-            >
-              <X className="size-4" />
-            </button>
-          </div>
-        )}
-
-        <div className="grid gap-6 lg:grid-cols-[1fr_22rem]">
-          <div className="flex min-w-0 flex-col gap-6">
-            <RecipientsInput
-              token={token}
-              onTokenChange={setToken}
-              defaultAmount={defaultAmount}
-              onDefaultAmountChange={setDefaultAmount}
-              onAdd={addRecipients}
-              locked={executing}
-            />
-            <RecipientsTable
-              recipients={recipients}
-              token={token}
-              network={network}
-              locked={executing}
-              onRemove={(id) => setEntries((prev) => prev.filter((e) => e.id !== id))}
-              onClear={clearAll}
-            />
-          </div>
-
+        <div className="lg:col-span-8 space-y-6 flex flex-col h-[calc(100vh-8rem)]">
           <SummaryCard
+            validCount={valid.length}
+            totalAmount={totalAmount}
+            token={token}
+            isConnected={wallet.connected}
+            isExecuting={isExecuting}
+            isInsufficient={isInsufficient}
+            onExecute={handleExecute}
+          />
+
+          {statusMsg && (
+            <div className="bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 p-3 rounded-lg border border-blue-200 dark:border-blue-800 text-sm font-medium text-center">
+              {statusMsg}
+            </div>
+          )}
+
+          <RecipientsTable
+            results={results}
             token={token}
             network={network}
-            readyCount={ready.length}
-            totalAmount={totalAmount}
-            txCount={txCount}
-            networkFeeLamports={networkFeeLamports}
-            rentLamports={rentLamports}
-            requiredLamports={requiredLamports}
-            balances={balances}
-            connected={Boolean(wallet.address)}
-            executing={executing}
-            progress={{ done: processed.length, total: processed.length + inFlight }}
-            blocker={blocker}
-            onConnect={wallet.connect}
-            onExecute={execute}
+            handleExportCSV={handleExportCSV}
           />
         </div>
       </main>
     </div>
-  )
+  );
 }

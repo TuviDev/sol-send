@@ -1,9 +1,28 @@
-﻿import { Connection, PublicKey, VersionedTransaction, Transaction } from '@solana/web3.js';
-import { getAssociatedTokenAddressSync, createAssociatedTokenAccountInstruction } from '@solana/spl-token';
+﻿import { Connection, PublicKey } from '@solana/web3.js';
+import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { MULTIHOPPER_MAX_DESTINATIONS } from './multihopper';
 
 export type Network = 'devnet' | 'mainnet-beta';
 export type TokenKind = 'SOL' | 'USDC';
+
+export interface Entry {
+  address: string;
+  amount: number;
+}
+
+export type RecipientParsed = Entry;
+
+export interface ExecutionResult {
+  address: string;
+  status: 'ready' | 'running' | 'completed' | 'failed';
+  signature?: string;
+  error?: string;
+}
+
+export const NETWORK_LABEL: Record<Network, string> = {
+  devnet: 'Devnet',
+  'mainnet-beta': 'Mainnet',
+};
 
 export const TOKEN_DECIMALS: Record<TokenKind, number> = {
   SOL: 9,
@@ -24,9 +43,9 @@ export const USDC_MINT: Record<Network, string> = {
   devnet: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
 };
 
-export interface RecipientParsed {
-  address: string;
-  amount: number;
+export function shortAddress(address: string, chars = 4): string {
+  if (!address) return '';
+  return `${address.slice(0, chars)}...${address.slice(-chars)}`;
 }
 
 export function isValidAddress(address: string): boolean {
@@ -107,11 +126,15 @@ export async function estimateCosts(
   if (token === 'USDC') {
     const mint = new PublicKey(USDC_MINT[network]);
     for (const address of recipients) {
-      const pubkey = new PublicKey(address);
-      const ata = getAssociatedTokenAddressSync(mint, pubkey);
-      const info = await connection.getAccountInfo(ata);
-      if (!info) {
-        ataRent += ATA_RENT_LAMPORTS;
+      try {
+        const pubkey = new PublicKey(address);
+        const ata = getAssociatedTokenAddressSync(mint, pubkey);
+        const info = await connection.getAccountInfo(ata);
+        if (!info) {
+          ataRent += ATA_RENT_LAMPORTS;
+        }
+      } catch {
+        // Skip invalid address during cost estimation
       }
     }
   }
