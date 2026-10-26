@@ -2,7 +2,7 @@
 
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useAppNetwork } from '@/components/solsend/solana-providers';
 import { 
   parseRecipients, 
@@ -12,11 +12,15 @@ import {
   shortAddress,
   toBaseUnits,
   fromBaseUnits,
+  LAMPORTS_PER_SOL,
+  USDC_MINT,
   type TokenKind,
   type ExecutionResult
 } from '@/lib/solana';
 import { executeMassPayout } from '@/lib/multihopper';
 import { executePayout } from '@/lib/solana';
+import { PublicKey } from '@solana/web3.js';
+import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { 
   Send, 
   Zap, 
@@ -27,7 +31,13 @@ import {
   ExternalLink, 
   Sparkles,
   Trash2,
-  Layers
+  Layers,
+  Upload,
+  Download,
+  Search,
+  Wallet,
+  AlertTriangle,
+  Info
 } from 'lucide-react';
 
 const DEMO_RECIPIENTS = `11111111111111111111111111111111, 0.005
@@ -48,9 +58,56 @@ export default function Home() {
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [globalStatus, setGlobalStatus] = useState<string>('');
 
+  // Balance states
+  const [solBalance, setSolBalance] = useState<number | null>(null);
+  const [usdcBalance, setUsdcBalance] = useState<number | null>(null);
+
+  // Search & Filter
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'ready' | 'confirmed' | 'failed'>('all');
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // Fetch Balances
+  useEffect(() => {
+    if (!publicKey || !connection) {
+      setSolBalance(null);
+      setUsdcBalance(null);
+      return;
+    }
+
+    let isSubscribed = true;
+    const fetchBalances = async () => {
+      try {
+        // SOL Balance
+        const lamports = await connection.getBalance(publicKey, 'confirmed');
+        if (isSubscribed) setSolBalance(lamports / LAMPORTS_PER_SOL);
+
+        // USDC Balance
+        try {
+          const usdcMintPubkey = new PublicKey(USDC_MINT[network]);
+          const ata = getAssociatedTokenAddressSync(usdcMintPubkey, publicKey);
+          const balanceObj = await connection.getTokenAccountBalance(ata);
+          if (isSubscribed) setUsdcBalance(balanceObj.value.uiAmount ?? 0);
+        } catch {
+          if (isSubscribed) setUsdcBalance(0);
+        }
+      } catch (err) {
+        console.error('Błąd pobierania salda:', err);
+      }
+    };
+
+    fetchBalances();
+    const interval = setInterval(fetchBalances, 10000);
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+    };
+  }, [publicKey, connection, network]);
 
   const entries = useMemo(() => parseRecipients(inputText, defaultAmount), [inputText, defaultAmount]);
   const recipients = useMemo(() => deriveRecipients(entries, results, token), [entries, results, token]);
@@ -75,6 +132,54 @@ export default function Home() {
 
   const costs = useMemo(() => estimateCosts(readyRecipients.length, token), [readyRecipients.length, token]);
 
+  const activeBalance = token === 'SOL' ? solBalance : usdcBalance;
+  const isInsufficientBalance = activeBalance !== null && Number(totalAmountFormatted) > activeBalance;
+
+  // Filtered recipients for UI table
+  const filteredRecipients = useMemo(() => {
+    return recipients.filter((r) => {
+      const matchesSearch = searchQuery === '' || r.address.toLowerCase().includes(searchQuery.toLowerCase());
+      if (!matchesSearch) return false;
+      if (statusFilter === 'ready') return r.status === 'ready';
+      if (statusFilter === 'confirmed') return r.status === 'confirmed';
+      if (statusFilter === 'failed') return r.status === 'failed' || r.status === 'invalid' || r.status === 'duplicate';
+      return true;
+    });
+  }, [recipients, searchQuery, statusFilter]);
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      if (text) {
+        setInputText(text);
+        setResults({});
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleExportCSV = () => {
+    if (recipients.length === 0) return;
+
+    const headers = 'Address,Amount,Token,Status,Transaction_Signature,Error\n';
+    const rows = recipients
+      .map((r) => `"${r.address}",${r.amount},${token},"${r.status}","${r.signature || ''}","${r.error || ''}"`)
+      .join('\n');
+
+    const blob = new Blob([headers + rows], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `solsend_payout_report_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const handleUpdateResults = useCallback((ids: string[], result: ExecutionResult) => {
     setResults((prev) => {
       const next = { ...prev };
@@ -93,6 +198,11 @@ export default function Home() {
 
     if (readyRecipients.length === 0) {
       setGlobalStatus('Błąd: Brak prawidłowych odbiorców do wysyłki.');
+      return;
+    }
+
+    if (isInsufficientBalance) {
+      setGlobalStatus(`Błąd: Niewystarczające saldo ${token}. Wymagane: ${totalAmountFormatted} ${token}.`);
       return;
     }
 
@@ -156,8 +266,8 @@ export default function Home() {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-3xl font-black tracking-tight text-white">SolSend</h1>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-semibold flex items-center gap-1">
-                <ShieldCheck className="w-3 h-3" /> MultiHopper
+              <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-semibold flex items-center gap-1">
+                <ShieldCheck className="w-3.5 h-3.5" /> MultiHopper
               </span>
             </div>
             <p className="text-xs text-slate-400">Web3 Mass Payout & Batch Dispatcher</p>
@@ -165,6 +275,18 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Active Balance Badge */}
+          {publicKey && mounted && (
+            <div className="hidden sm:flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs">
+              <Wallet className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="text-slate-400">Saldo:</span>
+              <span className="font-bold text-white">
+                {solBalance !== null ? `${solBalance.toFixed(3)} SOL` : '...'}
+                {usdcBalance !== null && ` | ${usdcBalance.toFixed(2)} USDC`}
+              </span>
+            </div>
+          )}
+
           <select
             value={network}
             onChange={(e) => setNetwork(e.target.value as any)}
@@ -244,7 +366,7 @@ export default function Home() {
                     MultiHopper Route
                     {useMultiHopper && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
                   </div>
-                  <div className="text-xs text-slate-400 mt-1">Anonimizacja, batche do 20 adresów</div>
+                  <div className="text-xs text-slate-400 mt-1">Anonimizacja 3-Hop, batche do 20 adresów</div>
                 </button>
 
                 <button
@@ -267,17 +389,34 @@ export default function Home() {
 
           {/* Recipients Input Card */}
           <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-sm flex flex-col">
-            <div className="flex justify-between items-center mb-3">
+            <div className="flex flex-wrap justify-between items-center mb-3 gap-2">
               <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
                 Lista Odbiorców (Adres, Kwota)
               </label>
-              <div className="flex gap-2">
+              
+              <div className="flex items-center gap-3">
+                <input
+                  type="file"
+                  accept=".csv,.txt"
+                  ref={fileInputRef}
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+                
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="text-xs text-slate-300 hover:text-white bg-slate-800 px-2.5 py-1 rounded border border-slate-700 transition-colors flex items-center gap-1.5"
+                >
+                  <Upload className="w-3.5 h-3.5 text-emerald-400" /> Wgraj CSV/TXT
+                </button>
+
                 <button
                   onClick={() => setInputText(DEMO_RECIPIENTS)}
                   className="text-xs text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1"
                 >
-                  <Layers className="w-3.5 h-3.5" /> Wczytaj przykłady
+                  <Layers className="w-3.5 h-3.5" /> Przykłady
                 </button>
+
                 <button
                   onClick={() => { setInputText(''); setResults({}); }}
                   className="text-xs text-slate-500 hover:text-slate-300 font-medium flex items-center gap-1"
@@ -294,6 +433,14 @@ export default function Home() {
               placeholder="11111111111111111111111111111111, 0.05&#10;22222222222222222222222222222222, 0.10"
               className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-200 focus:outline-none focus:border-emerald-500 resize-none leading-relaxed"
             />
+          </div>
+
+          {/* Educational Info Card */}
+          <div className="bg-emerald-950/20 border border-emerald-500/20 rounded-2xl p-4 flex items-start gap-3">
+            <Info className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+            <div className="text-xs text-slate-300 leading-relaxed">
+              <span className="font-bold text-emerald-400">Jak działa trasowanie MultiHopper?</span> Wykorzystujemy 3-stopniowy router (Orchestration & Dispersion Hops), który anonimizuje nadawcę oraz automatycznie rozdziela do 20 adresów docelowych na jedną transakcję z dynamicznym pobieraniem prowizji dla dAppa.
+            </div>
           </div>
         </div>
 
@@ -325,14 +472,22 @@ export default function Home() {
               </div>
             </div>
 
+            {/* Insufficient balance alert */}
+            {isInsufficientBalance && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl flex items-center gap-2 text-rose-300 text-xs">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>Niewystarczające saldo {token} w portfelu.</span>
+              </div>
+            )}
+
             <button
               onClick={handleExecutePayout}
-              disabled={!publicKey || isProcessing || readyRecipients.length === 0}
+              disabled={!publicKey || isProcessing || readyRecipients.length === 0 || isInsufficientBalance}
               className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed rounded-xl text-white font-bold transition-all shadow-lg shadow-emerald-950/50 flex items-center justify-center gap-2"
             >
               {isProcessing ? (
                 <>
-                  <Loader2 className="w-5 h-5 animate-spin" /> Przetwarzanie...
+                  <Loader2 className="w-5 h-5 animate-spin" /> Przetwarzanie paczek...
                 </>
               ) : publicKey ? (
                 <>
@@ -351,15 +506,53 @@ export default function Home() {
             )}
           </div>
 
-          {/* Recipients List Table */}
+          {/* Recipients List Table & Filter */}
           <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-sm flex flex-col flex-1">
-            <h3 className="text-sm font-bold text-white mb-3">Status Odbiorców ({recipients.length})</h3>
+            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2 mb-3">
+              <h3 className="text-sm font-bold text-white">Status Odbiorców ({recipients.length})</h3>
+              
+              <button
+                onClick={handleExportCSV}
+                disabled={recipients.length === 0}
+                className="text-xs text-slate-300 hover:text-white bg-slate-800 px-2.5 py-1 rounded border border-slate-700 disabled:opacity-50 transition-colors flex items-center gap-1.5 self-start sm:self-auto"
+              >
+                <Download className="w-3.5 h-3.5 text-emerald-400" /> Raport CSV
+              </button>
+            </div>
 
-            <div className="overflow-y-auto max-h-[300px] space-y-2 pr-1">
-              {recipients.length === 0 ? (
-                <p className="text-xs text-slate-500 text-center py-6">Brak zdefiniowanych odbiorców.</p>
+            {/* Search & Filter Pills */}
+            <div className="flex flex-col sm:flex-row gap-2 mb-3">
+              <div className="relative flex-1">
+                <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-2.5" />
+                <input
+                  type="text"
+                  placeholder="Szukaj adresu..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="flex gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800 text-[10px]">
+                {(['all', 'ready', 'confirmed', 'failed'] as const).map((st) => (
+                  <button
+                    key={st}
+                    onClick={() => setStatusFilter(st)}
+                    className={`px-2 py-1 rounded font-semibold capitalize transition-colors ${
+                      statusFilter === st ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {st === 'all' ? 'Wszystkie' : st === 'ready' ? 'Gotowe' : st === 'confirmed' ? 'Sukces' : 'Błędy'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="overflow-y-auto max-h-[280px] space-y-2 pr-1">
+              {filteredRecipients.length === 0 ? (
+                <p className="text-xs text-slate-500 text-center py-6">Brak wyników do wyświetlenia.</p>
               ) : (
-                recipients.map((r) => (
+                filteredRecipients.map((r) => (
                   <div key={r.id} className="p-2.5 bg-slate-950/80 border border-slate-800/60 rounded-lg flex items-center justify-between text-xs">
                     <div className="flex flex-col gap-0.5">
                       <span className="font-mono text-slate-200">{shortAddress(r.address)}</span>
