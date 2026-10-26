@@ -1,9 +1,10 @@
 ﻿import { Connection, PublicKey } from '@solana/web3.js';
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
-import { MULTIHOPPER_MAX_DESTINATIONS } from './multihopper';
 
 export type Network = 'devnet' | 'mainnet-beta';
 export type TokenKind = 'SOL' | 'USDC';
+
+export const MULTIHOPPER_MAX_DESTINATIONS = 20;
 
 export interface Entry {
   address: string;
@@ -12,9 +13,18 @@ export interface Entry {
 
 export type RecipientParsed = Entry;
 
+export interface Recipient {
+  id: string;
+  address: string;
+  amount: number;
+  status: 'ready' | 'processing' | 'running' | 'confirmed' | 'completed' | 'failed';
+  signature?: string;
+  error?: string;
+}
+
 export interface ExecutionResult {
   address: string;
-  status: 'ready' | 'running' | 'completed' | 'failed';
+  status: 'ready' | 'processing' | 'running' | 'confirmed' | 'completed' | 'failed';
   signature?: string;
   error?: string;
 }
@@ -134,7 +144,7 @@ export async function estimateCosts(
           ataRent += ATA_RENT_LAMPORTS;
         }
       } catch {
-        // Skip invalid address during cost estimation
+        // Skip invalid address
       }
     }
   }

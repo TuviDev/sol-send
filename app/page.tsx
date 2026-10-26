@@ -6,7 +6,7 @@ import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import { Search, Upload, Zap, Trash2, CheckCircle2, XCircle, Clock, ExternalLink, ShieldCheck, FileDown, LogOut, Wallet, RefreshCw } from 'lucide-react';
 import { useAppNetwork } from '@/components/solsend/solana-providers';
 import { useBalances } from '@/hooks/use-balances';
-import { parseRecipients, deriveRecipients, explorerTxUrl, BATCH_SIZE } from '@/lib/solana';
+import { parseRecipients, deriveRecipients, explorerTxUrl, BATCH_SIZE, ExecutionResult } from '@/lib/solana';
 import { executeMassPayout } from '@/lib/multihopper';
 import { Button } from '@/components/ui/button';
 
@@ -26,7 +26,7 @@ export default function AppDashboard() {
   
   const [isExecuting, setIsExecuting] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
-  const [results, setResults] = useState<Array<{ address: string; status: 'ready' | 'running' | 'completed' | 'failed'; signature?: string }>>([]);
+  const [results, setResults] = useState<ExecutionResult[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'ready' | 'completed' | 'failed'>('all');
 
@@ -364,8 +364,8 @@ export default function AppDashboard() {
                         <td className="px-4 py-3 font-medium">{parsedData?.amount || 0} {token}</td>
                         <td className="px-4 py-3">
                           {r.status === 'ready' && <span className="inline-flex items-center gap-1.5 text-slate-500"><Clock className="w-4 h-4"/> Ready</span>}
-                          {r.status === 'running' && <span className="inline-flex items-center gap-1.5 text-blue-500 animate-pulse"><Zap className="w-4 h-4"/> Processing...</span>}
-                          {r.status === 'completed' && <span className="inline-flex items-center gap-1.5 text-green-500"><CheckCircle2 className="w-4 h-4"/> Confirmed</span>}
+                          {(r.status === 'running' || r.status === 'processing') && <span className="inline-flex items-center gap-1.5 text-blue-500 animate-pulse"><Zap className="w-4 h-4"/> Processing...</span>}
+                          {(r.status === 'completed' || r.status === 'confirmed') && <span className="inline-flex items-center gap-1.5 text-green-500"><CheckCircle2 className="w-4 h-4"/> Confirmed</span>}
                           {r.status === 'failed' && <span className="inline-flex items-center gap-1.5 text-red-500"><XCircle className="w-4 h-4"/> Failed</span>}
                         </td>
                         <td className="px-4 py-3 text-right">
